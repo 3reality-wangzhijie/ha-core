@@ -101,7 +101,7 @@ async def test_migration_from_v1_to_v2(
         mock_config_entry.entry_id,
         config_entry=mock_config_entry,
         device_id=device.id,
-        suggested_object_id="google_generative_ai_conversation",
+        suggested_object_id="claude",
     )
 
     # Run migration
