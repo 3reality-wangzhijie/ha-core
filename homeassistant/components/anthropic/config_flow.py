@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import partial
 import logging
-from typing import Any
+from typing import Any, cast
 
 import anthropic
 import voluptuous as vol
@@ -130,64 +130,62 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     """Flow for managing conversation subentries."""
 
     last_rendered_recommended = False
-    is_new: bool
-    start_data: dict[str, Any]
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Add a subentry."""
-        self.is_new = True
-        self.start_data = RECOMMENDED_OPTIONS.copy()
-        return await self.async_step_set_options()
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Handle reconfiguration of a subentry."""
-        self.is_new = False
-        self.start_data = self._get_reconfigure_subentry().data.copy()
-        return await self.async_step_set_options()
+    @property
+    def _is_new(self) -> bool:
+        """Return if this is a new subentry."""
+        return self.source == "user"
 
     async def async_step_set_options(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Set conversation options."""
-        options: dict[str, Any] = self.start_data
         errors: dict[str, str] = {}
 
-        if user_input is not None:
-            if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
-                if not user_input.get(CONF_LLM_HASS_API):
-                    user_input.pop(CONF_LLM_HASS_API, None)
-                if user_input.get(
-                    CONF_THINKING_BUDGET, RECOMMENDED_THINKING_BUDGET
-                ) >= user_input.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS):
-                    errors[CONF_THINKING_BUDGET] = "thinking_budget_too_large"
+        if user_input is None:
+            if self._is_new:
+                options = RECOMMENDED_OPTIONS.copy()
+            else:
+                # If this is a reconfiguration, we need to copy the existing options
+                # so that we can show the current values in the form.
+                options = self._get_reconfigure_subentry().data.copy()
 
-                if not errors:
-                    if self.is_new:
-                        return self.async_create_entry(
-                            title=user_input.pop(CONF_NAME),
-                            data=user_input,
-                        )
+            self.last_rendered_recommended = cast(
+                bool, options.get(CONF_RECOMMENDED, False)
+            )
 
-                    return self.async_update_and_abort(
-                        self._get_entry(),
-                        self._get_reconfigure_subentry(),
+        elif user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
+            if not user_input.get(CONF_LLM_HASS_API):
+                user_input.pop(CONF_LLM_HASS_API, None)
+            if user_input.get(
+                CONF_THINKING_BUDGET, RECOMMENDED_THINKING_BUDGET
+            ) >= user_input.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS):
+                errors[CONF_THINKING_BUDGET] = "thinking_budget_too_large"
+
+            if not errors:
+                if self._is_new:
+                    return self.async_create_entry(
+                        title=user_input.pop(CONF_NAME),
                         data=user_input,
                     )
-            else:
-                # Re-render the options again, now with the recommended options shown/hidden
-                self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
 
-                options = {
-                    CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
-                    CONF_PROMPT: user_input[CONF_PROMPT],
-                    CONF_LLM_HASS_API: user_input.get(CONF_LLM_HASS_API),
-                }
+                return self.async_update_and_abort(
+                    self._get_entry(),
+                    self._get_reconfigure_subentry(),
+                    data=user_input,
+                )
+
+            options = user_input
+            self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
         else:
-            self.last_rendered_recommended = options.get(CONF_RECOMMENDED, False)
+            # Re-render the options again, now with the recommended options shown/hidden
+            self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
+
+            options = {
+                CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
+                CONF_PROMPT: user_input[CONF_PROMPT],
+                CONF_LLM_HASS_API: user_input.get(CONF_LLM_HASS_API),
+            }
 
         suggested_values = options.copy()
         if not suggested_values.get(CONF_PROMPT):
@@ -198,7 +196,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             suggested_values[CONF_LLM_HASS_API] = [suggested_llm_apis]
 
         schema = self.add_suggested_values_to_schema(
-            vol.Schema(anthropic_config_option_schema(self.hass, self.is_new, options)),
+            vol.Schema(
+                anthropic_config_option_schema(self.hass, self._is_new, options)
+            ),
             suggested_values,
         )
 
@@ -207,6 +207,9 @@ class ConversationSubentryFlowHandler(ConfigSubentryFlow):
             data_schema=schema,
             errors=errors or None,
         )
+
+    async_step_user = async_step_set_options
+    async_step_reconfigure = async_step_set_options
 
 
 def anthropic_config_option_schema(
