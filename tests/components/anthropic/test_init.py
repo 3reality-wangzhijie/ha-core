@@ -109,7 +109,7 @@ async def test_migration_from_v1_to_v2(
         "homeassistant.components.openai_conversation.async_setup_entry",
         return_value=True,
     ):
-        assert await async_setup_component(hass, DOMAIN, {})
+        await hass.config_entries.async_setup(mock_config_entry.entry_id)
 
     assert mock_config_entry.version == 2
     assert mock_config_entry.data == {"api_key": "1234"}
