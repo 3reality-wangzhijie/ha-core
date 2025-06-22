@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import partial
 import logging
-from types import MappingProxyType
 from typing import Any
 
 import anthropic
@@ -15,10 +14,11 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
-    OptionsFlow,
+    ConfigSubentryFlow,
+    SubentryFlowResult,
 )
-from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API, CONF_NAME
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -36,6 +36,7 @@ from .const import (
     CONF_RECOMMENDED,
     CONF_TEMPERATURE,
     CONF_THINKING_BUDGET,
+    DEFAULT_CONVERSATION_NAME,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -72,7 +73,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
 class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Anthropic."""
 
-    VERSION = 1
+    VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -102,35 +103,57 @@ class AnthropicConfigFlow(ConfigFlow, domain=DOMAIN):
                 return self.async_create_entry(
                     title="Claude",
                     data=user_input,
-                    options=RECOMMENDED_OPTIONS,
+                    subentries=[
+                        {
+                            "subentry_type": "conversation",
+                            "data": RECOMMENDED_OPTIONS,
+                            "title": DEFAULT_CONVERSATION_NAME,
+                            "unique_id": None,
+                        }
+                    ],
                 )
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors or None
         )
 
-    @staticmethod
-    def async_get_options_flow(
-        config_entry: ConfigEntry,
-    ) -> OptionsFlow:
-        """Create the options flow."""
-        return AnthropicOptionsFlow(config_entry)
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return subentries supported by this integration."""
+        return {"conversation": ConversationSubentryFlowHandler}
 
 
-class AnthropicOptionsFlow(OptionsFlow):
-    """Anthropic config flow options handler."""
+class ConversationSubentryFlowHandler(ConfigSubentryFlow):
+    """Flow for managing conversation subentries."""
 
-    def __init__(self, config_entry: ConfigEntry) -> None:
-        """Initialize options flow."""
-        self.last_rendered_recommended = config_entry.options.get(
-            CONF_RECOMMENDED, False
-        )
+    last_rendered_recommended = False
+    is_new: bool
+    start_data: dict[str, Any]
 
-    async def async_step_init(
+    async def async_step_user(
         self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Manage the options."""
-        options: dict[str, Any] | MappingProxyType[str, Any] = self.config_entry.options
+    ) -> SubentryFlowResult:
+        """Add a subentry."""
+        self.is_new = True
+        self.start_data = RECOMMENDED_OPTIONS.copy()
+        return await self.async_step_set_options()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle reconfiguration of a subentry."""
+        self.is_new = False
+        self.start_data = self._get_reconfigure_subentry().data.copy()
+        return await self.async_step_set_options()
+
+    async def async_step_set_options(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Set conversation options."""
+        options: dict[str, Any] = self.start_data
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -143,7 +166,17 @@ class AnthropicOptionsFlow(OptionsFlow):
                     errors[CONF_THINKING_BUDGET] = "thinking_budget_too_large"
 
                 if not errors:
-                    return self.async_create_entry(title="", data=user_input)
+                    if self.is_new:
+                        return self.async_create_entry(
+                            title=user_input.pop(CONF_NAME),
+                            data=user_input,
+                        )
+
+                    return self.async_update_and_abort(
+                        self._get_entry(),
+                        self._get_reconfigure_subentry(),
+                        data=user_input,
+                    )
             else:
                 # Re-render the options again, now with the recommended options shown/hidden
                 self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
@@ -153,6 +186,8 @@ class AnthropicOptionsFlow(OptionsFlow):
                     CONF_PROMPT: user_input[CONF_PROMPT],
                     CONF_LLM_HASS_API: user_input.get(CONF_LLM_HASS_API),
                 }
+        else:
+            self.last_rendered_recommended = options.get(CONF_RECOMMENDED, False)
 
         suggested_values = options.copy()
         if not suggested_values.get(CONF_PROMPT):
@@ -163,12 +198,12 @@ class AnthropicOptionsFlow(OptionsFlow):
             suggested_values[CONF_LLM_HASS_API] = [suggested_llm_apis]
 
         schema = self.add_suggested_values_to_schema(
-            vol.Schema(anthropic_config_option_schema(self.hass, options)),
+            vol.Schema(anthropic_config_option_schema(self.hass, self.is_new, options)),
             suggested_values,
         )
 
         return self.async_show_form(
-            step_id="init",
+            step_id="set_options",
             data_schema=schema,
             errors=errors or None,
         )
@@ -176,6 +211,7 @@ class AnthropicOptionsFlow(OptionsFlow):
 
 def anthropic_config_option_schema(
     hass: HomeAssistant,
+    is_new: bool,
     options: Mapping[str, Any],
 ) -> dict:
     """Return a schema for Anthropic completion options."""
@@ -187,15 +223,24 @@ def anthropic_config_option_schema(
         for api in llm.async_get_apis(hass)
     ]
 
-    schema = {
-        vol.Optional(CONF_PROMPT): TemplateSelector(),
-        vol.Optional(
-            CONF_LLM_HASS_API,
-        ): SelectSelector(SelectSelectorConfig(options=hass_apis, multiple=True)),
-        vol.Required(
-            CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
-        ): bool,
-    }
+    if is_new:
+        schema: dict[vol.Required | vol.Optional, Any] = {
+            vol.Required(CONF_NAME, default=DEFAULT_CONVERSATION_NAME): str,
+        }
+    else:
+        schema = {}
+
+    schema.update(
+        {
+            vol.Optional(CONF_PROMPT): TemplateSelector(),
+            vol.Optional(
+                CONF_LLM_HASS_API,
+            ): SelectSelector(SelectSelectorConfig(options=hass_apis, multiple=True)),
+            vol.Required(
+                CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
+            ): bool,
+        }
+    )
 
     if options.get(CONF_RECOMMENDED):
         return schema
