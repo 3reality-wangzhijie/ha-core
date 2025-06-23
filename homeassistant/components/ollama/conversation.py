@@ -25,7 +25,6 @@ from .const import (
     CONF_NUM_CTX,
     CONF_PROMPT,
     CONF_THINK,
-    DEFAULT_CONVERSATION_NAME,
     DEFAULT_KEEP_ALIVE,
     DEFAULT_MAX_HISTORY,
     DEFAULT_NUM_CTX,
@@ -187,7 +186,7 @@ class OllamaConversationEntity(
         """Initialize the agent."""
         self.entry = entry
         self.subentry = subentry
-        self._attr_name = subentry.title or DEFAULT_CONVERSATION_NAME
+        self._attr_name = subentry.title
         self._attr_unique_id = subentry.subentry_id
         if self.subentry.data.get(CONF_LLM_HASS_API):
             self._attr_supported_features = (

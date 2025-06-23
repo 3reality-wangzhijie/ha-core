@@ -29,7 +29,6 @@
         "reconfigure": "Reconfigure conversation agent"
       },
       "entry_type": "Conversation agent",
-
       "step": {
         "set_options": {
           "data": {

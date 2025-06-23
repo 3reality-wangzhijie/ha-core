@@ -227,49 +227,42 @@ class OllamaConfigFlow(ConfigFlow, domain=DOMAIN):
 class ConversationSubentryFlowHandler(ConfigSubentryFlow):
     """Flow for managing conversation subentries."""
 
-    is_new: bool
-    start_data: dict[str, Any]
-
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Add a subentry."""
-        self.is_new = True
-        self.start_data = {}
-        return await self.async_step_set_options()
-
-    async def async_step_reconfigure(
-        self, user_input: dict[str, Any] | None = None
-    ) -> SubentryFlowResult:
-        """Handle reconfiguration of a subentry."""
-        self.is_new = False
-        self.start_data = self._get_reconfigure_subentry().data.copy()
-        return await self.async_step_set_options()
+    @property
+    def _is_new(self) -> bool:
+        """Return if this is a new subentry."""
+        return self.source == "user"
 
     async def async_step_set_options(
         self, user_input: dict[str, Any] | None = None
     ) -> SubentryFlowResult:
         """Set conversation options."""
-        options = self.start_data
         errors: dict[str, str] = {}
 
-        if user_input is not None:
-            if self.is_new:
-                return self.async_create_entry(
-                    title=user_input.pop(CONF_NAME),
-                    data=user_input,
-                )
+        if user_input is None:
+            if self._is_new:
+                options = {}
+            else:
+                options = self._get_reconfigure_subentry().data.copy()
 
+        elif self._is_new:
+            return self.async_create_entry(
+                title=user_input.pop(CONF_NAME),
+                data=user_input,
+            )
+        else:
             return self.async_update_and_abort(
                 self._get_entry(),
                 self._get_reconfigure_subentry(),
                 data=user_input,
             )
 
-        schema = ollama_config_option_schema(self.hass, self.is_new, options)
+        schema = ollama_config_option_schema(self.hass, self._is_new, options)
         return self.async_show_form(
             step_id="set_options", data_schema=vol.Schema(schema), errors=errors
         )
+
+    async_step_user = async_step_set_options
+    async_step_reconfigure = async_step_set_options
 
 
 def ollama_config_option_schema(
