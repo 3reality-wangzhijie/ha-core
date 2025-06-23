@@ -106,7 +106,7 @@ async def test_migration_from_v1_to_v2(
 
     # Run migration
     with patch(
-        "homeassistant.components.openai_conversation.async_setup_entry",
+        "homeassistant.components.anthropic.async_setup_entry",
         return_value=True,
     ):
         await hass.config_entries.async_setup(mock_config_entry.entry_id)
